@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
             if web {
                 cfg.web_gui.enabled = true;
             }
-            run_daemon(cfg).await?;
+            run_daemon(cfg, cli.config).await?;
         }
         Commands::Tui => {
             tui::run_tui(&cfg).await?;
@@ -184,7 +184,7 @@ fn print_ipc_response(resp: IpcResponse) {
     }
 }
 
-async fn run_daemon(cfg: Config) -> Result<()> {
+async fn run_daemon(cfg: Config, config_path: Option<PathBuf>) -> Result<()> {
     info!(
         "Starting AegisRS daemon v{} on {}",
         env!("CARGO_PKG_VERSION"),
@@ -296,6 +296,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     // 3b. Spawn Linux /proc Reverse-Shell & Web User Process Watcher
     spawn_process_watcher(collector_tx.clone(), shutdown_tx.subscribe());
 
+    // 3c. Spawn Self-Integrity Tamper Watcher (config.toml & AegisRS binary)
+    spawn_self_integrity_watcher(config_path, collector_tx.clone(), shutdown_tx.subscribe());
+
     // 4. Spawn Docker Monitor
     spawn_docker_monitor(
         cfg.docker.clone(),
@@ -343,6 +346,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     });
 
     let mut engine = DetectionEngine::new(&cfg);
+    let webhook_sem = Arc::new(tokio::sync::Semaphore::new(8));
 
     loop {
         tokio::select! {
@@ -383,12 +387,15 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         }
                     }
 
-                    // Optional Auto-Ban on Critical events
+                    // Optional Auto-Ban on Critical events (protected by circuit breaker)
                     if evt.severity == Severity::Critical && cfg.ids.auto_ban_on_critical {
                         if let Some(ip) = evt.source_ip.clone() {
-                            if let Ok(ban) = firewall.ban_ip(&ip, &evt.title, Some(cfg.ids.auto_ban_duration_secs)) {
-                                let _ = storage.upsert_ban(&ban);
-                                evt = evt.with_action_taken(format!("Auto-banned {ip}"));
+                            match firewall.try_auto_ban(&ip, &evt.title, Some(cfg.ids.auto_ban_duration_secs)) {
+                                Ok(ban) => {
+                                    let _ = storage.upsert_ban(&ban);
+                                    evt = evt.with_action_taken(format!("Auto-banned {ip}"));
+                                }
+                                Err(e) => warn!("Auto-ban skipped for {ip}: {e}"),
                             }
                         }
                     }
@@ -400,8 +407,11 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     let _ = event_tx.send(evt.clone());
 
                     let n = notifier.clone();
+                    let sem = webhook_sem.clone();
                     tokio::spawn(async move {
-                        n.notify(&evt).await;
+                        if let Ok(_permit) = sem.acquire().await {
+                            n.notify(&evt).await;
+                        }
                     });
                 }
             }
@@ -409,6 +419,60 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn spawn_self_integrity_watcher(
+    config_path: Option<PathBuf>,
+    tx: mpsc::Sender<CollectorMessage>,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+) {
+    let mut targets: Vec<(PathBuf, Option<(u64, std::time::SystemTime)>)> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(meta) = std::fs::metadata(&exe) {
+            if let Ok(mtime) = meta.modified() {
+                targets.push((exe, Some((meta.len(), mtime))));
+            }
+        }
+    }
+    if let Some(cfg) = config_path {
+        if let Ok(meta) = std::fs::metadata(&cfg) {
+            if let Ok(mtime) = meta.modified() {
+                targets.push((cfg, Some((meta.len(), mtime))));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = shutdown.recv() => break,
+                _ = interval.tick() => {
+                    for (path, baseline) in &mut targets {
+                        let current = std::fs::metadata(&*path)
+                            .ok()
+                            .and_then(|m| m.modified().ok().map(|t| (m.len(), t)));
+                        if *baseline != current {
+                            warn!("CRITICAL: Self-integrity change detected on {}", path.display());
+                            let evt = SecurityEvent::new(
+                                Severity::Critical,
+                                EventCategory::System,
+                                "AegisRS Self-Integrity Tampering Detected",
+                                format!("Protected AegisRS file modified or removed: {}", path.display()),
+                            )
+                            .with_file_path(path.display().to_string())
+                            .with_rule_id("AEGIS-SELF-TAMPER");
+                            let _ = tx.send(CollectorMessage::DirectEvent(evt)).await;
+                            *baseline = current;
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 async fn shutdown_signal() {
