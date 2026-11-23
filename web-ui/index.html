@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AegisRS — VPS Security Console</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="auth-overlay" class="auth-overlay">
+    <form id="login-form" class="auth-card" aria-label="AegisRS Authentication">
+      <div class="brand-row">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <div>
+          <h1>AegisRS Console</h1>
+          <p class="muted">Local-only Security Operations</p>
+        </div>
+      </div>
+      <label for="password-input">Access Password or API Token</label>
+      <input id="password-input" type="password" autocomplete="current-password" required placeholder="Enter password or bootstrap token" />
+      <p id="auth-error" class="error-text" hidden></p>
+      <button type="submit" class="btn btn-primary">Unlock Console</button>
+    </form>
+  </div>
+
+  <div id="app" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand-row">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <div>
+          <span class="brand-title">AegisRS</span>
+          <span id="host-badge" class="badge badge-neutral">connecting...</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="ws-status" class="status-pill status-offline">
+          <span class="dot"></span> Live Feed
+        </span>
+        <button id="btn-pause-fim" class="btn btn-secondary" type="button">Pause FIM (15m)</button>
+        <button id="btn-logout" class="btn btn-ghost" type="button">Lock</button>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="kpi-strip" aria-label="System Metrics">
+        <article class="kpi-card">
+          <span class="kpi-label">Events Processed</span>
+          <strong id="kpi-events" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card">
+          <span class="kpi-label">Total Alerts</span>
+          <strong id="kpi-alerts" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card">
+          <span class="kpi-label">Active Bans</span>
+          <strong id="kpi-bans" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card">
+          <span class="kpi-label">Daemon Uptime</span>
+          <strong id="kpi-uptime" class="kpi-value">0s</strong>
+        </article>
+      </section>
+
+      <section class="panel alerts-panel" aria-label="Live Security Alerts">
+        <div class="panel-header">
+          <h2>Live Security Alerts</h2>
+          <span class="muted">Real-time WebSocket stream</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Severity</th>
+                <th>Category</th>
+                <th>Source IP</th>
+                <th>Alert</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-tbody">
+              <tr><td colspan="6" class="empty-cell">No security alerts recorded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="side-column">
+        <section class="panel" aria-label="Web Servers & Docker">
+          <div class="panel-header">
+            <h2>Services &amp; Containers</h2>
+          </div>
+          <div id="services-list" class="stack-list"></div>
+          <div id="docker-list" class="stack-list"></div>
+        </section>
+
+        <section class="panel" aria-label="Banned IPs">
+          <div class="panel-header">
+            <h2>Active Firewall Bans</h2>
+          </div>
+          <div id="bans-list" class="stack-list"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
