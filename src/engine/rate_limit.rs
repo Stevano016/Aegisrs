@@ -3,8 +3,10 @@ use crate::models::{EventCategory, SecurityEvent, Severity, UnifiedLogEntry};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+const MAX_TRACKED_IPS: usize = 10_000;
+
 /// Sliding-window rate limiter for RPS anomalies, per-IP brute force,
-/// and distributed IP-rotation brute force (VPN/Tor/botnet).
+/// and distributed IP-rotation brute force (VPN/Tor/botnet) with OOM-safe eviction.
 pub struct RateLimiter {
     window: Duration,
     max_rps_per_ip: u32,
@@ -51,10 +53,39 @@ impl RateLimiter {
         false
     }
 
+    fn evict_stale(&mut self, cutoff: Instant, now: Instant) {
+        self.requests_by_ip.retain(|_, q| {
+            Self::prune_old(q, cutoff);
+            !q.is_empty()
+        });
+        self.auth_fails_by_ip.retain(|_, q| {
+            Self::prune_old(q, cutoff);
+            !q.is_empty()
+        });
+        self.cooldowns.retain(|_, &mut until| now < until);
+
+        // Hard cap fallback against extreme random-IP log flooding
+        if self.requests_by_ip.len() > MAX_TRACKED_IPS {
+            self.requests_by_ip.clear();
+        }
+        if self.auth_fails_by_ip.len() > MAX_TRACKED_IPS {
+            self.auth_fails_by_ip.clear();
+        }
+        if self.cooldowns.len() > MAX_TRACKED_IPS {
+            self.cooldowns.clear();
+        }
+    }
+
     /// Records a log entry and returns any rate-limit or brute-force events triggered.
     pub fn record(&mut self, entry: &UnifiedLogEntry) -> Vec<SecurityEvent> {
         let now = Instant::now();
         let cutoff = now - self.window;
+        if self.requests_by_ip.len() >= MAX_TRACKED_IPS
+            || self.auth_fails_by_ip.len() >= MAX_TRACKED_IPS
+            || self.cooldowns.len() >= MAX_TRACKED_IPS
+        {
+            self.evict_stale(cutoff, now);
+        }
         let mut events = Vec::new();
 
         // 1. RPS / Layer-7 flood check
@@ -234,5 +265,27 @@ mod tests {
         let evts = limiter.record(&fifth);
         assert_eq!(evts.len(), 1);
         assert_eq!(evts[0].rule_id.as_deref(), Some("AEGIS-DIST-BRUTEFORCE"));
+    }
+
+    #[test]
+    fn test_rate_limiter_oom_eviction_bound() {
+        let cfg = IdsConfig::default();
+        let mut limiter = RateLimiter::new(&cfg);
+        for i in 0..12_000u32 {
+            let entry = UnifiedLogEntry {
+                timestamp: Utc::now(),
+                server: "nginx".into(),
+                client_ip: format!("10.{}.{}.{}", (i >> 16) & 0xff, (i >> 8) & 0xff, i & 0xff),
+                method: "GET".into(),
+                path: "/".into(),
+                status: 200,
+                user_agent: "test".into(),
+                bytes_sent: 0,
+                raw_line: "GET /".into(),
+                is_auth_failure: false,
+            };
+            let _ = limiter.record(&entry);
+        }
+        assert!(limiter.requests_by_ip.len() <= MAX_TRACKED_IPS);
     }
 }
