@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.db
+*.db-wal
+*.db-shm
+config.toml
+checklist_perbaikan_produksi_aegisrs.md
+prd_arsitektur_sistem_aegisrs.md
+MEMORY.md

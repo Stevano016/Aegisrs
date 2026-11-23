@@ -1,0 +1,76 @@
+# AegisRS Configuration Example
+# Copy to /etc/aegisrs/config.toml (chmod 600)
+
+[general]
+hostname = "vps-kampus-01"
+sqlite_path = "/var/lib/aegisrs/events.db"
+socket_path = "/run/aegisrs/aegis.sock"
+ipc_tcp_port = 19450
+auth_log_path = "/var/log/auth.log"
+# custom_rules_path = "/etc/aegisrs/custom_rules.toml"
+
+[web_servers]
+auto_detect = true
+trusted_proxies = ["127.0.0.1", "::1", "173.245.48.0/20"]
+
+[web_servers.nginx]
+enabled = true
+access_log = "/var/log/nginx/access.log"
+error_log = "/var/log/nginx/error.log"
+
+[web_servers.apache]
+enabled = true
+access_log = "/var/log/apache2/access.log"
+error_log = "/var/log/apache2/error.log"
+
+[fim]
+enabled = true
+watch_paths = ["/var/www/html", "/etc/nginx/sites-enabled", "/etc/apache2/sites-enabled"]
+persistence_paths = ["/root/.ssh/authorized_keys", "/etc/passwd", "/etc/shadow", "/etc/crontab"]
+auto_quarantine = false
+quarantine_dir = "/var/lib/aegisrs/quarantine"
+ignore_file = ".aegisignore"
+
+[ids]
+max_rps_per_ip = 50
+auth_fail_threshold = 10
+window_secs = 10
+auto_ban_on_critical = false
+auto_ban_duration_secs = 86400
+firewall_backend = "ufw" # "ufw", "iptables", "nftables", "none"
+whitelist_ips = ["127.0.0.1", "::1"]
+
+[alerts.telegram]
+enabled = false
+bot_token = "ENV:AEGIS_TG_TOKEN"
+chat_id = "-1001234567890"
+min_severity = "HIGH" # LOW, MEDIUM, HIGH, CRITICAL
+
+[alerts.discord]
+enabled = false
+url = "ENV:AEGIS_DISCORD_WEBHOOK"
+min_severity = "HIGH"
+
+[alerts.slack]
+enabled = false
+url = "ENV:AEGIS_SLACK_WEBHOOK"
+min_severity = "HIGH"
+
+[alerts.custom_webhook]
+enabled = false
+url = "https://siem.example.com/ingest"
+min_severity = "CRITICAL"
+# bearer_token = "ENV:AEGIS_WEBHOOK_TOKEN"
+
+[web_gui]
+enabled = false
+bind_address = "127.0.0.1:8080"
+# Generate with: aegis hash-password "your-strong-password"
+password_hash = ""
+api_token = ""
+
+[docker]
+enabled = true
+poll_interval_secs = 15
+cpu_alert_threshold_percent = 85.0
+restart_loop_threshold = 5

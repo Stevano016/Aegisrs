@@ -1,0 +1,65 @@
+[package]
+name = "aegisrs"
+version = "0.3.0"
+edition = "2021"
+authors = ["AegisRS Contributors"]
+description = "Lightweight single-binary VPS security agent, Nginx/Apache IDS, FIM & anti-defacement daemon"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[[bin]]
+name = "aegis"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Logging & Diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Detection Engine & FIM
+aho-corasick = "1"
+regex = "1"
+notify = "6"
+walkdir = "2"
+globset = "0.4"
+ipnetwork = "0.20"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Networking & Webhooks
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# TUI Dashboard
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Embedded Web GUI
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+rust-embed = "8"
+mime_guess = "2"
+argon2 = "0.5"
+futures-util = "0.3"
+
+# Docker Monitor
+bollard = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
