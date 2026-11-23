@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 use collectors::docker::spawn_docker_monitor;
 use collectors::fim::spawn_fim_watcher;
 use collectors::log_watcher::spawn_log_tailer;
+use collectors::proc_watcher::spawn_process_watcher;
 use collectors::webserver::apache::ApacheProvider;
 use collectors::webserver::nginx::NginxProvider;
 use collectors::webserver::{RealIpResolver, WebServerProvider};
@@ -223,20 +224,22 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
     let (collector_tx, mut collector_rx) = mpsc::channel::<CollectorMessage>(1024);
 
-    // 1. Spawn web server log tailers
+    // 1. Spawn web server access & error log tailers
     for provider in &providers {
-        let (enabled, access_log) = match provider.name() {
+        let (enabled, access_log, error_log) = match provider.name() {
             "nginx" => (
                 cfg.web_servers.nginx.enabled
                     || (cfg.web_servers.auto_detect && provider.detect_installed()),
                 cfg.web_servers.nginx.access_log.clone(),
+                cfg.web_servers.nginx.error_log.clone(),
             ),
             "apache" => (
                 cfg.web_servers.apache.enabled
                     || (cfg.web_servers.auto_detect && provider.detect_installed()),
                 cfg.web_servers.apache.access_log.clone(),
+                cfg.web_servers.apache.error_log.clone(),
             ),
-            _ => (false, PathBuf::new()),
+            _ => (false, PathBuf::new(), PathBuf::new()),
         };
         if enabled && !access_log.as_os_str().is_empty() {
             info!(
@@ -248,6 +251,22 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 access_log,
                 Some(provider.clone()),
                 false,
+                None,
+                collector_tx.clone(),
+                shutdown_tx.subscribe(),
+            );
+        }
+        if enabled && !error_log.as_os_str().is_empty() {
+            info!(
+                "Watching {} error log: {}",
+                provider.name(),
+                error_log.display()
+            );
+            spawn_log_tailer(
+                error_log,
+                None,
+                false,
+                Some(provider.name().to_string()),
                 collector_tx.clone(),
                 shutdown_tx.subscribe(),
             );
@@ -260,6 +279,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             cfg.general.auth_log_path.clone(),
             None,
             true,
+            None,
             collector_tx.clone(),
             shutdown_tx.subscribe(),
         );
@@ -272,6 +292,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         collector_tx.clone(),
         shutdown_tx.subscribe(),
     );
+
+    // 3b. Spawn Linux /proc Reverse-Shell & Web User Process Watcher
+    spawn_process_watcher(collector_tx.clone(), shutdown_tx.subscribe());
 
     // 4. Spawn Docker Monitor
     spawn_docker_monitor(

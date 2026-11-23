@@ -161,11 +161,48 @@ pub fn parse_auth_log_line(raw_line: &str) -> Option<UnifiedLogEntry> {
     })
 }
 
-/// Spawns an async tailer task for a single log file (web server access log or auth.log).
+/// Inspects Nginx/Apache `error_log` lines for active exploitation artifacts
+/// (PHP eval/fatal errors, permission denied LFI, FastCGI script probes).
+pub fn parse_error_log_line(server: &str, raw_line: &str) -> Option<SecurityEvent> {
+    let lower = raw_line.to_ascii_lowercase();
+    let (sev, title, rule_id) = if lower.contains("eval()'d code")
+        || lower.contains("assert()")
+        || lower.contains("shell_exec")
+    {
+        (
+            Severity::Critical,
+            format!("Suspicious PHP Execution in {server} Error Log"),
+            "AEGIS-ERRLOG-EXEC",
+        )
+    } else if lower.contains("open_basedir restriction") || lower.contains("permission denied") {
+        (
+            Severity::High,
+            format!("Filesystem Access / LFI Error in {server}"),
+            "AEGIS-ERRLOG-PERM",
+        )
+    } else if lower.contains("primary script unknown") || lower.contains("no input file specified") {
+        (
+            Severity::Low,
+            format!("PHP Script Probe in {server} Error Log"),
+            "AEGIS-ERRLOG-PROBE",
+        )
+    } else {
+        return None;
+    };
+
+    Some(
+        SecurityEvent::new(sev, EventCategory::WebAttack, title, raw_line.to_string())
+            .with_rule_id(rule_id)
+            .with_raw_snippet(raw_line),
+    )
+}
+
+/// Spawns an async tailer task for a single log file (web server access/error log or auth.log).
 pub fn spawn_log_tailer(
     path: PathBuf,
     provider: Option<Arc<dyn WebServerProvider>>,
     is_auth_log: bool,
+    error_log_server: Option<String>,
     tx: mpsc::Sender<CollectorMessage>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
@@ -259,15 +296,21 @@ pub fn spawn_log_tailer(
                                         st.offset += bytes as u64;
                                         let trimmed = line.trim_end_matches(['\r', '\n']);
                                         if !trimmed.is_empty() {
-                                            let parsed = if is_auth_log {
-                                                parse_auth_log_line(trimmed)
-                                            } else if let Some(ref p) = provider {
-                                                p.parse_log_line(trimmed)
+                                            if let Some(ref srv) = error_log_server {
+                                                if let Some(evt) = parse_error_log_line(srv, trimmed) {
+                                                    let _ = tx.send(CollectorMessage::DirectEvent(evt)).await;
+                                                }
                                             } else {
-                                                None
-                                            };
-                                            if let Some(entry) = parsed {
-                                                let _ = tx.send(CollectorMessage::LogEntry(entry)).await;
+                                                let parsed = if is_auth_log {
+                                                    parse_auth_log_line(trimmed)
+                                                } else if let Some(ref p) = provider {
+                                                    p.parse_log_line(trimmed)
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(entry) = parsed {
+                                                    let _ = tx.send(CollectorMessage::LogEntry(entry)).await;
+                                                }
                                             }
                                         }
                                         line.clear();
