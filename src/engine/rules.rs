@@ -167,20 +167,25 @@ impl RuleEngine {
     }
 }
 
-/// Lightweight URL normalization for common attack-encoding evasions.
+/// Lightweight two-pass URL & SQL comment normalization for evasion resistance.
 fn normalize_url_for_scan(input: &str) -> String {
-    input
-        .replace("%20", " ")
-        .replace('+', " ")
-        .replace("%27", "'")
-        .replace("%3c", "<")
-        .replace("%3C", "<")
-        .replace("%3e", ">")
-        .replace("%3E", ">")
-        .replace("%2f", "/")
-        .replace("%2F", "/")
-        .replace("%2e", ".")
-        .replace("%2E", ".")
+    fn decode_once(s: &str) -> String {
+        s.replace("%25", "%")
+            .replace("%20", " ")
+            .replace('+', " ")
+            .replace("%27", "'")
+            .replace("%3c", "<")
+            .replace("%3C", "<")
+            .replace("%3e", ">")
+            .replace("%3E", ">")
+            .replace("%2f", "/")
+            .replace("%2F", "/")
+            .replace("%2e", ".")
+            .replace("%2E", ".")
+    }
+    let pass1 = decode_once(input);
+    let pass2 = decode_once(&pass1);
+    pass2.replace("/**/", " ")
 }
 
 #[cfg(test)]
@@ -212,5 +217,22 @@ mod tests {
         assert!(!engine.evaluate(&sample_entry("/.env", "python-requests")).is_empty());
         assert!(!engine.evaluate(&sample_entry("/", "sqlmap/1.7")).is_empty());
         assert!(engine.evaluate(&sample_entry("/api/v1/health", "Mozilla/5.0")).is_empty());
+    }
+
+    #[test]
+    fn test_evasion_double_encoding_and_sql_comments() {
+        let engine = RuleEngine::new(None);
+        assert!(!engine
+            .evaluate(&sample_entry(
+                "/download?f=%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+                "curl"
+            ))
+            .is_empty());
+        assert!(!engine
+            .evaluate(&sample_entry(
+                "/index.php?id=1%20UNION/**/SELECT%201,2",
+                "curl"
+            ))
+            .is_empty());
     }
 }

@@ -141,6 +141,7 @@ impl Default for FimConfig {
 pub struct IdsConfig {
     pub max_rps_per_ip: u32,
     pub auth_fail_threshold: u32,
+    pub distributed_auth_threshold: u32,
     pub window_secs: u64,
     pub auto_ban_on_critical: bool,
     pub auto_ban_duration_secs: u64,
@@ -154,6 +155,7 @@ impl Default for IdsConfig {
         Self {
             max_rps_per_ip: 50,
             auth_fail_threshold: 10,
+            distributed_auth_threshold: 15,
             window_secs: 10,
             auto_ban_on_critical: false,
             auto_ban_duration_secs: 86400,
