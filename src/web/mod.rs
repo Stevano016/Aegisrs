@@ -7,25 +7,33 @@ use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        Path, Query, Request, State,
     },
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
+use chrono::{DateTime, Duration, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+const MAX_LOGIN_FAILURES: u32 = 5;
+const LOGIN_LOCKOUT_SECS: i64 = 300;
+const SESSION_TTL_HOURS: i64 = 12;
+const MAX_ACTIVE_SESSIONS: usize = 64;
+
 #[derive(Clone)]
 struct WebAppState {
     daemon: DaemonState,
-    sessions: Arc<RwLock<HashSet<String>>>,
+    sessions: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    login_guard: Arc<RwLock<(u32, Option<DateTime<Utc>>)>>,
     bootstrap_token: String,
 }
 
@@ -72,7 +80,8 @@ pub async fn serve_web_gui(
 
     let app_state = WebAppState {
         daemon,
-        sessions: Arc::new(RwLock::new(HashSet::new())),
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+        login_guard: Arc::new(RwLock::new((0, None))),
         bootstrap_token,
     };
 
@@ -87,6 +96,7 @@ pub async fn serve_web_gui(
         .route("/api/services/:name/reload", post(api_reload_service))
         .route("/ws", get(ws_handler))
         .fallback(embed::static_handler)
+        .layer(middleware::from_fn(security_headers_middleware))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
@@ -99,6 +109,30 @@ pub async fn serve_web_gui(
         .await?;
 
     Ok(())
+}
+
+async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'",
+        ),
+    );
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
 }
 
 async fn is_authorized(state: &WebAppState, headers: &HeaderMap) -> bool {
@@ -126,13 +160,30 @@ async fn is_valid_token(state: &WebAppState, tok: &str) -> bool {
     {
         return true;
     }
-    state.sessions.read().await.contains(tok)
+    let sessions = state.sessions.read().await;
+    sessions
+        .get(tok)
+        .map(|&exp| Utc::now() < exp)
+        .unwrap_or(false)
 }
 
 async fn api_login(
     State(state): State<WebAppState>,
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    {
+        let guard = state.login_guard.read().await;
+        if let Some(locked_until) = guard.1 {
+            if Utc::now() < locked_until {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many failed login attempts. Try again later.",
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let hash_str = &state.daemon.config.web_gui.password_hash;
     let api_tok = &state.daemon.config.web_gui.api_token;
 
@@ -152,10 +203,26 @@ async fn api_login(
     };
 
     if ok {
+        {
+            let mut guard = state.login_guard.write().await;
+            *guard = (0, None);
+        }
         let token = Uuid::new_v4().to_string();
-        state.sessions.write().await.insert(token.clone());
+        let mut sessions = state.sessions.write().await;
+        let now = Utc::now();
+        sessions.retain(|_, &mut exp| now < exp);
+        if sessions.len() >= MAX_ACTIVE_SESSIONS {
+            sessions.clear();
+        }
+        sessions.insert(token.clone(), now + Duration::hours(SESSION_TTL_HOURS));
         (StatusCode::OK, Json(LoginResponse { token })).into_response()
     } else {
+        let mut guard = state.login_guard.write().await;
+        guard.0 += 1;
+        if guard.0 >= MAX_LOGIN_FAILURES {
+            guard.1 = Some(Utc::now() + Duration::seconds(LOGIN_LOCKOUT_SECS));
+            warn!("Web GUI login locked out for {LOGIN_LOCKOUT_SECS}s after {MAX_LOGIN_FAILURES} failures");
+        }
         (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
     }
 }
