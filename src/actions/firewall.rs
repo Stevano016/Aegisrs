@@ -2,15 +2,22 @@ use crate::models::BannedIp;
 use anyhow::{bail, Result};
 use chrono::{Duration, Utc};
 use ipnetwork::IpNetwork;
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
 
-/// Executes firewall bans/unbans while enforcing strict anti-self-lockout safeguards.
+const AUTO_BAN_MAX_PER_MINUTE: usize = 20;
+
+/// Executes firewall bans/unbans while enforcing strict anti-self-lockout safeguards
+/// and an automatic-ban circuit breaker.
 #[derive(Debug, Clone)]
 pub struct FirewallManager {
     backend: String,
     protected_nets: Vec<IpNetwork>,
+    auto_ban_timestamps: Arc<Mutex<VecDeque<Instant>>>,
 }
 
 impl FirewallManager {
@@ -30,7 +37,28 @@ impl FirewallManager {
         Self {
             backend: backend.into().to_lowercase(),
             protected_nets,
+            auto_ban_timestamps: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// Auto-ban wrapper with a per-minute circuit breaker to prevent firewall rule flooding.
+    pub fn try_auto_ban(&self, ip_str: &str, reason: &str, duration_secs: Option<u64>) -> Result<BannedIp> {
+        {
+            let mut ts = self.auto_ban_timestamps.lock().unwrap();
+            let cutoff = Instant::now() - StdDuration::from_secs(60);
+            while let Some(&front) = ts.front() {
+                if front < cutoff {
+                    ts.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if ts.len() >= AUTO_BAN_MAX_PER_MINUTE {
+                bail!("Auto-ban circuit breaker tripped (> {AUTO_BAN_MAX_PER_MINUTE} bans/min)");
+            }
+            ts.push_back(Instant::now());
+        }
+        self.ban_ip(ip_str, reason, duration_secs)
     }
 
     /// Returns true if the IP is hardcoded-protected or whitelisted (never ban).
@@ -152,5 +180,16 @@ mod tests {
         assert!(fw.ban_ip("10.0.0.5", "test", None).is_err());
         assert!(fw.ban_ip("173.245.48.10", "test", None).is_err());
         assert!(fw.ban_ip("203.0.113.99", "malicious", Some(3600)).is_ok());
+    }
+
+    #[test]
+    fn test_auto_ban_circuit_breaker() {
+        let fw = FirewallManager::new("none", &[], &[]);
+        for i in 1..=AUTO_BAN_MAX_PER_MINUTE {
+            assert!(fw
+                .try_auto_ban(&format!("203.0.113.{i}"), "test", Some(60))
+                .is_ok());
+        }
+        assert!(fw.try_auto_ban("203.0.113.250", "flood", Some(60)).is_err());
     }
 }
