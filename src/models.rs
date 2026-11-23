@@ -36,6 +36,7 @@ pub enum EventCategory {
     FileIntegrity,
     WebShell,
     Persistence,
+    ReverseShell,
     DockerAnomaly,
     System,
 }
@@ -51,6 +52,7 @@ impl fmt::Display for EventCategory {
             EventCategory::FileIntegrity => "file_integrity",
             EventCategory::WebShell => "web_shell",
             EventCategory::Persistence => "persistence",
+            EventCategory::ReverseShell => "reverse_shell",
             EventCategory::DockerAnomaly => "docker_anomaly",
             EventCategory::System => "system",
         };
