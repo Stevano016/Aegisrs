@@ -80,6 +80,8 @@ enum Commands {
     },
     /// Resume File Integrity Monitoring immediately
     Resume,
+    /// Audit installed Nginx, Apache, and PHP versions for known critical CVEs
+    Audit,
     /// Generate an Argon2id password hash for [web_gui].password_hash
     HashPassword { password: String },
 }
@@ -141,6 +143,9 @@ async fn main() -> Result<()> {
         Commands::Resume => {
             let resp = send_ipc_request(&cfg, IpcRequest::ResumeFim).await?;
             print_ipc_response(resp);
+        }
+        Commands::Audit => {
+            run_cve_audit();
         }
         Commands::HashPassword { password } => {
             let salt = SaltString::generate(&mut OsRng);
@@ -488,5 +493,101 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+fn parse_semver_tuple(raw: &str) -> Option<(u32, u32, u32)> {
+    let re = regex::Regex::new(r"(\d+)\.(\d+)\.(\d+)").ok()?;
+    let caps = re.captures(raw)?;
+    Some((
+        caps.get(1)?.as_str().parse().ok()?,
+        caps.get(2)?.as_str().parse().ok()?,
+        caps.get(3)?.as_str().parse().ok()?,
+    ))
+}
+
+fn evaluate_software_cve(software: &str, version_output: &str) -> Vec<String> {
+    let Some((maj, min, pat)) = parse_semver_tuple(version_output) else {
+        return Vec::new();
+    };
+    let mut findings = Vec::new();
+    match software {
+        "apache" => {
+            if (maj, min, pat) == (2, 4, 49) || (maj, min, pat) == (2, 4, 50) {
+                findings.push(format!(
+                    "[CRITICAL] Apache {maj}.{min}.{pat} is vulnerable to CVE-2021-41773 / CVE-2021-42013 (Path Traversal & RCE)"
+                ));
+            }
+        }
+        "nginx" => {
+            if (maj, min, pat) < (1, 20, 1) {
+                findings.push(format!(
+                    "[HIGH] Nginx {maj}.{min}.{pat} may be vulnerable to CVE-2021-23017 (DNS Resolver Heap Write)"
+                ));
+            }
+        }
+        "php" => {
+            let vuln = (maj == 8 && min == 1 && pat < 29)
+                || (maj == 8 && min == 2 && pat < 20)
+                || (maj == 8 && min == 3 && pat < 8)
+                || maj < 8;
+            if vuln {
+                findings.push(format!(
+                    "[HIGH] PHP {maj}.{min}.{pat} may be vulnerable to CVE-2024-4577 (PHP-CGI Argument Injection RCE)"
+                ));
+            }
+        }
+        _ => {}
+    }
+    findings
+}
+
+fn run_cve_audit() {
+    println!("AegisRS Passive CVE Version Audit");
+    println!("---------------------------------");
+    let probes = [
+        ("nginx", "nginx", &["-v"][..]),
+        ("apache", "apache2", &["-v"][..]),
+        ("apache", "httpd", &["-v"][..]),
+        ("php", "php", &["-v"][..]),
+    ];
+    let mut found_any = false;
+    for (sw, bin, args) in probes {
+        if let Ok(out) = std::process::Command::new(bin).args(args).output() {
+            found_any = true;
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let first_line = text.lines().next().unwrap_or("").trim();
+            println!("Detected {bin}: {first_line}");
+            let findings = evaluate_software_cve(sw, &text);
+            if findings.is_empty() {
+                println!("  -> OK (no critical baseline CVEs matched)");
+            } else {
+                for f in findings {
+                    println!("  -> {f}");
+                }
+            }
+        }
+    }
+    if !found_any {
+        println!("No nginx/apache2/httpd/php binaries found in PATH on this host.");
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn test_cve_version_audit() {
+        assert!(!evaluate_software_cve("apache", "Server version: Apache/2.4.49 (Unix)").is_empty());
+        assert!(evaluate_software_cve("apache", "Server version: Apache/2.4.58 (Ubuntu)").is_empty());
+        assert!(!evaluate_software_cve("nginx", "nginx version: nginx/1.18.0").is_empty());
+        assert!(evaluate_software_cve("nginx", "nginx version: nginx/1.24.0").is_empty());
+        assert!(!evaluate_software_cve("php", "PHP 8.2.10 (cli)").is_empty());
+        assert!(evaluate_software_cve("php", "PHP 8.3.10 (cli)").is_empty());
     }
 }
